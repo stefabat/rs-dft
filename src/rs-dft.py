@@ -7,6 +7,49 @@ np.set_printoptions(precision=8, suppress=True, linewidth=200)
 # the active orbital indices are 1-based
 # spin is equal to 2*S, following the pyscf convention
 def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-6, alpha=None, as_solver=None, debug=False, store=False):
+    """
+    Performs a multiconfigurational range-separated DFT calculation.
+
+    Parameters
+    ----------
+    mf : pyscf.scf.hf.SCF
+        Mean-field object (RHF/UHF/RKS/UKS)
+    nel_act : int
+        Number of electrons in the active space
+    nmo_act : int
+        Number of molecular orbitals in the active space
+    active : list or tuple
+        Active orbital indices (1-based). Can be either:
+        - list: Same active orbitals for both spins
+        - tuple: (alpha_active, beta_active) for different spin channels
+    spin : int, optional
+        Total spin (2S). If None, taken from mf.mol.spin
+    max_iter : int, optional
+        Maximum number of macro-iterations (default: 100)
+    conv_tol : float, optional
+        Energy convergence threshold (default: 1e-6)
+    alpha : float, optional
+        Damping parameter for density matrix updates
+    as_solver : pyscf.fci.direct_spin1.FCISolver, optional
+        Active space solver. If None, uses default FCI solver
+    debug : bool, optional
+        Whether to print additional debug information (default: False)
+    store : bool, optional
+        Whether to store integrals to disk (default: False)
+
+    Returns
+    -------
+    tuple
+        (energy, density_matrix)
+        - energy: float, total MC-srDFT energy
+        - density_matrix: ndarray, active space density matrix
+
+    Notes
+    -----
+    The function implements the multiconfigurational range-separated DFT method,
+    combining DFT for the long-range and dynamic correlation with a
+    multiconfigurational treatment of the active space.
+    """
 
     print(f'\n*** Multiconfigurtional range-separated DFT ***')
     # determine if the calculation is restricted or unrestricted
