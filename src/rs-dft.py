@@ -208,7 +208,7 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
     as_solver.nelec = nel_as_solver
     as_solver.spin = spin
     as_solver.norb = nmo_act
-    # enforce the spin with the decorator
+    # enforce the spin with penalty function
     # as_solver = fci.addons.fix_spin_(as_solver, shift=.2, ss=spin)
 
     # initialize history lists
@@ -267,7 +267,7 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
         # store 1-body and 2-body integrals
         if store:
             print(f'Storing embedding potential in V_emb_mo_{scf_iter}.npy')
-            np.save(f'V_emb_mo_{scf_iter}.npy', V_emb_mo)
+            np.save(f'V_emb_mo_{scf_iter:02d}.npy', V_emb_mo)
 
         # solve the FCI problem with the embedding potential and lr ERI
         E_A, CI_vec = as_solver.kernel(h1e=V_emb_mo, eri=g_lr_mo, norb=nmo_act, nelec=nel_as_solver)
@@ -541,3 +541,6 @@ if __name__ == '__main__':
 
     # compute and print occupation numbers
     occ_num(D_sci_srlda)
+
+    # Energy difference
+    print(f"\nEnergy difference: {(E_fci_srlda - E_sci_srlda)*1000:.3f} [mHa]")
