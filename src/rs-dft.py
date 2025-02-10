@@ -1,6 +1,7 @@
 from pyscf import gto, scf, dft, fci, mcscf, ao2mo, tools
 import numpy as np
 from opt_einsum import contract
+from ccsd_solver import CCSDSolver
 np.set_printoptions(precision=8, suppress=True, linewidth=200)
 
 
@@ -354,6 +355,10 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
 
 
 def log_ci_states(ci_solver, thresh=1e-6):
+    if not (isinstance(ci_solver, fci.SCI) or isinstance(ci_solver, fci.direct_spin1.FCISolver)):
+        print("Only FCI and SCI solvers are supported for CI state logging.")
+        return
+
     norb = ci_solver.norb
     nel_a, nel_b = ci_solver.nelec
     fci_occslst_a = fci.cistring.gen_occslst(range(norb), nel_a)
@@ -477,8 +482,8 @@ def occ_num(D):
     else:
         # restricted case
         occ = np.sort(np.linalg.eigvals(D))[::-1]  # Sort in descending order
-        print("\nOccupation numbers:", occ)
-        print("Total:", np.sum(occ))
+        print("\nOccupation numbers: ", np.array2string(occ, precision=2, suppress_small=True))
+        print(f"Total: {np.sum(occ):4.2f}")
         return occ
 
 
@@ -522,7 +527,7 @@ if __name__ == '__main__':
     nmo_act = len(active)
     nel_act = 8
 
-    E_fci_srlda, D_fci_srlda, C_fci_srlda = mc_srdft(mf, nel_act, nmo_act, active, max_iter=20, conv_tol=1e-8, debug=False, alpha=0.0)
+    E_fci_srlda, D_fci_srlda, C_fci_srlda = mc_srdft(mf, nel_act, nmo_act, active)
 
     # compute and print occupation numbers
     occ_num(D_fci_srlda)
@@ -537,10 +542,17 @@ if __name__ == '__main__':
     sci_solver.ci_coeff_cutoff = 1e-3
     sci_solver.select_cutoff = 1e-3
 
-    E_sci_srlda, D_sci_srlda, C_sci_srlda = mc_srdft(mf, nel_act, nmo_act, active, max_iter=20, conv_tol=1e-8, debug=False, alpha=0.0, as_solver=sci_solver)
+    # E_sci_srlda, D_sci_srlda, C_sci_srlda = mc_srdft(mf, nel_act, nmo_act, active, as_solver=sci_solver)
 
     # compute and print occupation numbers
-    occ_num(D_sci_srlda)
+    # occ_num(D_sci_srlda)
 
     # Energy difference
-    print(f"\nEnergy difference: {(E_fci_srlda - E_sci_srlda)*1000:.3f} [mHa]")
+    # print(f"\nEnergy difference: {(E_fci_srlda - E_sci_srlda)*1000:.3f} [mHa]")
+
+    ccsd_solver = CCSDSolver()
+    E_ccsd_srlda, D_ccsd_srlda, C_ccsd_srlda = mc_srdft(mf, nel_act, nmo_act, active, as_solver=ccsd_solver)
+
+    occ_num(D_fci_srlda)
+
+    print(f"\nE_fci - E_ccsd: {(E_fci_srlda - E_ccsd_srlda)*1000:.3f} [mHa]")
