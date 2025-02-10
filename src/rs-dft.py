@@ -3,9 +3,7 @@ import numpy as np
 from opt_einsum import contract
 np.set_printoptions(precision=8, suppress=True, linewidth=200)
 
-# active is either a single list of active orbitals or a tuple with two lists (one for each spin)
-# the active orbital indices are 1-based
-# spin is equal to 2*S, following the pyscf convention
+
 def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-6, alpha=None, as_solver=None, debug=False, store=False):
     """
     Performs a multiconfigurational range-separated DFT calculation.
@@ -40,9 +38,10 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
     Returns
     -------
     tuple
-        (energy, density_matrix)
+        (energy, density_matrix, ci_vector)
         - energy: float, total MC-srDFT energy
         - density_matrix: ndarray, active space density matrix
+        - ci_vector: ndarray, ground state CI vector
 
     Notes
     -----
@@ -88,7 +87,7 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
         mult = spin + 1
     assert(nel_act % 2 == spin % 2)
     # use multiplicity to divide number of electrons into α and β channels
-    nel_fci = ((nel_act + mult - 1)//2, (nel_act - mult + 1)//2)
+    nel_as_solver = ((nel_act + mult - 1)//2, (nel_act - mult + 1)//2)
 
     # check if it is a range-separated calculation
     if hasattr(mf, 'omega'):
@@ -197,14 +196,20 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
     if as_solver is None:
         if nspins == 1:
             if spin == 0:
+                # somehow this complaints about the spin
+                # as_solver = fci.direct_spin0.FCI()
                 as_solver = fci.direct_spin1.FCI()
             else:
                 as_solver = fci.direct_spin1.FCI()
         else:
             as_solver = fci.direct_uhf.FCI()
 
+    # enforce the spin with the number of electrons
+    as_solver.nelec = nel_as_solver
+    as_solver.spin = spin
+    as_solver.norb = nmo_act
     # enforce the spin with the decorator
-    as_solver = fci.addons.fix_spin_(as_solver, shift=.2, ss=spin)
+    # as_solver = fci.addons.fix_spin_(as_solver, shift=.2, ss=spin)
 
     # initialize history lists
     D_A_history = []
@@ -265,7 +270,9 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
             np.save(f'V_emb_mo_{scf_iter}.npy', V_emb_mo)
 
         # solve the FCI problem with the embedding potential and lr ERI
-        E_A, CI_vec = as_solver.kernel(h1e=V_emb_mo, eri=g_lr_mo, norb=nmo_act, nelec=nel_fci)
+        E_A, CI_vec = as_solver.kernel(h1e=V_emb_mo, eri=g_lr_mo, norb=nmo_act, nelec=nel_as_solver)
+        # somehow the CI vector is not stored in the solver
+        as_solver.ci = CI_vec
         if debug:
             print('\nInactive energy:', E_I + E_n)
             print('Active energy:', E_A)
@@ -273,17 +280,17 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
 
         # new active density matrix
         if nspins == 1:
-            D_A_mo = as_solver.make_rdm1(CI_vec, norb=nmo_act, nelec=nel_fci)
+            D_A_mo = as_solver.make_rdm1(CI_vec, norb=nmo_act, nelec=nel_as_solver)
             if alpha is not None:
                 D_A_mo = (1-alpha)*D_A_mo + alpha*D_A_history[-1]
             # transform D_AO_mo to AO basis
             D_A = np.einsum('pt,tu,qu->pq', C_A, D_A_mo, C_A)
 
-            SS, Ms = as_solver.spin_square(CI_vec, norb=nmo_act, nelec=nel_fci)
+            SS, Ms = as_solver.spin_square(CI_vec, norb=nmo_act, nelec=nel_as_solver)
             # SS = 0
         else:
             # D_A_mo = fci_solver.make_rdm1s(CI_vec, norb=nmo_act, nelec=nel_fci)
-            D_A_mo, d2_A_mo = as_solver.make_rdm12s(CI_vec, norb=nmo_act, nelec=nel_fci)
+            D_A_mo, d2_A_mo = as_solver.make_rdm12s(CI_vec, norb=nmo_act, nelec=nel_as_solver)
             if alpha is not None:
                 D_A_mo_a = (1-alpha)*D_A_mo[0] + alpha*D_A_history[-1][0]
                 D_A_mo_b = (1-alpha)*D_A_mo[1] + alpha*D_A_history[-1][1]
@@ -340,8 +347,10 @@ def mc_srdft(mf, nel_act, nmo_act, active, spin=None, max_iter=100, conv_tol=1e-
     print('Inactive energy = ', E_I)
     print('Nuclear energy  = ', E_n)
 
+    log_ci_states(as_solver, thresh=1e-1)
+
     # return in any case the last density matrix and energy
-    return E_history[-1], D_A_history[-1]
+    return E_history[-1], D_A_history[-1], CI_vec
 
 
 def log_ci_states(ci_solver, thresh=1e-6):
@@ -442,6 +451,36 @@ def filter_ci_wf(ci_vector, nelec, norb, thresh=5e-3):
     return ci_vector[idxs,:][:,idxs], (np.asarray(strs), np.asarray(strs))
 
 
+def occ_num(D):
+    """
+    Compute and print occupation numbers from a density matrix.
+
+    Parameters
+    ----------
+    D : ndarray or tuple of ndarrays
+        Density matrix (restricted) or tuple of alpha/beta density matrices (unrestricted)
+
+    Returns
+    -------
+    ndarray or tuple of ndarrays
+        Occupation numbers for restricted or unrestricted case
+    """
+    if isinstance(D, tuple):
+        # unrestricted case
+        occ_a = np.sort(np.linalg.eigvals(D[0]))[::-1]  # Sort in descending order
+        occ_b = np.sort(np.linalg.eigvals(D[1]))[::-1]  # Sort in descending order
+        print("\nOccupation numbers:")
+        print("Alpha:", occ_a)
+        print("Beta:", occ_b)
+        print("Total:", np.sum(occ_a) + np.sum(occ_b))
+        return (occ_a, occ_b)
+    else:
+        # restricted case
+        occ = np.sort(np.linalg.eigvals(D))[::-1]  # Sort in descending order
+        print("\nOccupation numbers:", occ)
+        print("Total:", np.sum(occ))
+        return occ
+
 
 if __name__ == '__main__':
 
@@ -472,12 +511,7 @@ if __name__ == '__main__':
     mf.xc = f'ldaerf + lr_hf({omega})'
     mf.omega = omega
 
-    # mf = scf.UHF(mol)
-    # mf.kernel()
-
     mf.kernel()
-    # print(mf.mo_energy)
-    # print(mf.nelec)
 
     # print orbitals
     # from pyscf import tools
@@ -486,21 +520,24 @@ if __name__ == '__main__':
     # active space
     active = [1,2,3,4,5,6,7,8]
     nmo_act = len(active)
-    # active = (active, active)
     nel_act = 8
 
-    # selected CI solver
-    # for singlets
-    # fci_solver = fci.selected_ci_spin0.SCI()
+    E_fci_srlda, D_fci_srlda, C_fci_srlda = mc_srdft(mf, nel_act, nmo_act, active, max_iter=20, conv_tol=1e-8, debug=False, alpha=0.0)
 
+    # compute and print occupation numbers
+    occ_num(D_fci_srlda)
+
+    # re-run with SCI solver
+    sci_solver = fci.selected_ci_spin0.SCI()
     # for higher multiplicities
     # fci_solver = fci.SCI()
 
-    # fci_solver.max_cycle = 30
-    # fci_solver.conv_tol = 1e-10
-    # fci_solver.ci_coeff_cutoff = 5e-3
-    # fci_solver.select_cutoff = 5e-3
-    # print(f"SCI cutoffs: ci_coeff_cutoff = {fci_solver.fci_coeff_cutoff}, select_cutoff = {fci_solver.select_cutoff}")
+    # sci_solver.max_cycle = 30
+    # sci_solver.conv_tol = 1e-10
+    sci_solver.ci_coeff_cutoff = 1e-3
+    sci_solver.select_cutoff = 1e-3
 
+    E_sci_srlda, D_sci_srlda, C_sci_srlda = mc_srdft(mf, nel_act, nmo_act, active, max_iter=20, conv_tol=1e-8, debug=False, alpha=0.0, as_solver=sci_solver)
 
-    e,d = mc_srdft(mf, nel_act, nmo_act, active, max_iter=20, conv_tol=1e-8, debug=False, alpha=0.0)
+    # compute and print occupation numbers
+    occ_num(D_sci_srlda)
